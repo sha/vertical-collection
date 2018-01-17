@@ -274,9 +274,7 @@ export default class DynamicRadar extends Radar {
   reset() {
     super.reset();
 
-    if (this.skipList !== null) {
-      this.skipList.reset(this.totalItems);
-    }
+    this.skipList.reset(this.totalItems);
   }
 
   /*

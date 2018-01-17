@@ -8,6 +8,7 @@ import VirtualComponent from '../virtual-component';
 import insertRangeBefore from '../utils/insert-range-before';
 import objectAt from '../utils/object-at';
 import roundTo from '../utils/round-to';
+import { isPrepend, isAppend } from '../utils/mutation-checkers';
 
 import {
   addScrollHandler,
@@ -19,6 +20,7 @@ import Container from '../container';
 import closestElement from '../../utils/element/closest';
 import estimateElementHeight from '../../utils/element/estimate-element-height';
 import getScaledClientRect from '../../utils/element/get-scaled-client-rect';
+import keyForItem from '../../ember-internals/key-for-item';
 
 const {
   A,
@@ -33,10 +35,11 @@ export default class Radar {
       bufferSize,
       containerSelector,
       estimateHeight,
+      initialRenderCount,
       items,
+      key,
       renderAll,
       renderFromLast,
-      initialRenderCount,
       shouldRecycle,
       startingIndex
     }
@@ -49,6 +52,7 @@ export default class Radar {
     this.estimateHeight = estimateHeight;
     this.initialRenderCount = initialRenderCount;
     this.items = items;
+    this.key = key;
     this.renderAll = renderAll;
     this.renderFromLast = renderFromLast;
     this.shouldRecycle = shouldRecycle;
@@ -78,21 +82,28 @@ export default class Radar {
     this._resizeHandler = this.scheduleUpdate.bind(this);
 
     // Run state
+    this.isStarted = false;
     this._nextUpdate = null;
     this._nextLayout = null;
-    this._started = false;
     this._didReset = true;
+    this._didUpdateItems = false;
 
     // Cache state
     this._scrollTop = 0;
+
     // Setting these values to infinity starts us in a guaranteed good state for the radar,
     // so it knows that it needs to run certain measurements, etc.
     this._prevFirstItemIndex = Infinity;
     this._prevLastItemIndex = -Infinity;
     this._prevFirstVisibleIndex = 0;
     this._prevLastVisibleIndex = 0;
+
     this._firstReached = false;
     this._lastReached = false;
+    this._prevTotalItems = 0;
+    this._prevFirstKey = 0;
+    this._prevLastKey = 0;
+
     this._componentPool = [];
     this._prependComponentPool = [];
 
@@ -134,7 +145,7 @@ export default class Radar {
     this.orderedComponents = null;
     set(this, 'virtualComponents', null);
 
-    if (this._started) {
+    if (this.isStarted) {
       removeScrollHandler(this._scrollContainer, this._scrollHandler);
       Container.removeEventListener('resize', this._resizeHandler);
     }
@@ -182,7 +193,7 @@ export default class Radar {
       this._scrollTop = startingScrollTop + _collectionOffset;
     }
 
-    this._started = true;
+    this.isStarted = true;
     this.update();
 
     // Setup event handlers
@@ -203,7 +214,7 @@ export default class Radar {
    * @private
    */
   scheduleUpdate() {
-    if (this._nextUpdate !== null || this._started === false) {
+    if (this._nextUpdate !== null || this.isStarted === false) {
       return;
     }
 
@@ -215,7 +226,16 @@ export default class Radar {
     });
   }
 
+  updateItems() {
+    this._didUpdateItems = true;
+  }
+
   update() {
+    if (this._didUpdateItems === true) {
+      this._determineUpdateType();
+      this._didUpdateItems = false;
+    }
+
     this._updateConstants();
     this._updateIndexes();
     this._updateVirtualComponents();
@@ -224,7 +244,7 @@ export default class Radar {
   }
 
   afterUpdate() {
-    const { totalItems } = this;
+    const { _prevTotalItems: totalItems } = this;
 
     const scrollDiff = this._calculateScrollDiff();
 
@@ -238,7 +258,6 @@ export default class Radar {
     // Unset prepend offset, we're done with any prepend changes at this point
     this._prependOffset = 0;
 
-    // Send actions if there are any items
     if (totalItems !== 0) {
       this._sendActions();
     }
@@ -272,6 +291,35 @@ export default class Radar {
    */
   _calculateScrollDiff() {
     return (this._prependOffset + this._scrollTop) - this._scrollContainer.scrollTop;
+  }
+
+  _determineUpdateType() {
+    const {
+      items,
+      key,
+      totalItems,
+
+      _prevTotalItems,
+      _prevFirstKey,
+      _prevLastKey
+    } = this;
+
+    const lenDiff = totalItems - _prevTotalItems;
+
+    if (isPrepend(lenDiff, items, key, _prevFirstKey, _prevLastKey) === true) {
+      this.prepend(lenDiff);
+    } else if (isAppend(lenDiff, items, key, _prevFirstKey, _prevLastKey) === true) {
+      this.append(lenDiff);
+    } else {
+      this.reset();
+    }
+
+    const firstItem = objectAt(this.items, 0);
+    const lastItem = objectAt(this.items, this.totalItems - 1);
+
+    this._prevTotalItems = totalItems;
+    this._prevFirstKey = totalItems > 0 ? keyForItem(firstItem, key, 0) : 0;
+    this._prevLastKey = totalItems > 0 ? keyForItem(lastItem, key, totalItems - 1) : 0;
   }
 
   _updateConstants() {
@@ -361,9 +409,8 @@ export default class Radar {
 
       shouldRecycle,
       renderAll,
-
+      isStarted,
       _didReset,
-      _started,
 
       _occludedContentBefore,
       _occludedContentAfter,
@@ -379,7 +426,7 @@ export default class Radar {
       renderedTotalBefore = 0;
       renderedTotalAfter = 0;
 
-    } else if (_started === false) {
+    } else if (isStarted === false) {
       // The Radar hasn't been started yet, render the initialRenderCount if it exists
       renderedFirstItemIndex = this.startingIndex;
       renderedLastItemIndex = this.startingIndex + this.initialRenderCount - 1;
